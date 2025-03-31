@@ -1,0 +1,15 @@
+{
+  "name": "rust-backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "ws": "^8.18.1"
+  }
+}
