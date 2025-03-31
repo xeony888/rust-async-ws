@@ -45,7 +45,7 @@ async fn main() {
 
     let games: Games = Arc::new(RwLock::new(HashMap::new()));
 
-    let port = "127.0.0.1:8080".to_string();
+    let port = "0.0.0.0:8080".to_string();
     let addr: SocketAddr = port.parse().expect("Invalid Address");
 
     let listener = TcpListener::bind(addr).await.expect("Failed to bind");
