@@ -1,11 +1,8 @@
-use bincode;
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use rapier2d::na::vector;
+use rapier2d::prelude::*;
+use std::time::SystemTime;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-
-use crate::physics::{check_radial_collision, Moveable2d, PUCK_RADIUS};
 
 pub struct Client {
     pub id: usize,
@@ -35,22 +32,18 @@ pub trait GameLogic: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
     fn update(&mut self, elapsed: f64);
+    fn to_bytes(&self) -> Vec<u8>;
 }
 
-#[derive(Serialize, Deserialize)]
 pub struct Game {
     pub game_type: u8,
     pub last_update_ms: u128,
-    #[serde(
-        serialize_with = "serialize_logic",
-        deserialize_with = "deserialize_logic"
-    )]
     pub logic: Box<dyn GameLogic>,
-    pub players: Vec<usize>,
+    pub players: Vec<String>,
 }
 
 impl Game {
-    pub fn new<G: GameLogic + 'static>(logic: G, players: Vec<usize>) -> Self {
+    pub fn new<G: GameLogic + 'static>(logic: G, players: Vec<String>) -> Self {
         let game_type = logic.game_type();
 
         Self {
@@ -71,13 +64,6 @@ impl Game {
     pub fn downcast_mut<G: 'static>(&mut self) -> Option<&mut G> {
         self.logic.as_any_mut().downcast_mut::<G>()
     }
-    pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("Serialization failed")
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        bincode::deserialize(bytes).expect("Deserialization failed")
-    }
     pub fn update(&mut self) {
         let elapsed = self.get_and_update_duration() as f64;
         self.logic.update(elapsed);
@@ -93,63 +79,129 @@ impl Game {
     }
 }
 
-fn serialize_logic<S>(logic: &Box<dyn GameLogic>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    use serde::ser::Error;
-
-    match logic.game_type() {
-        1 => {
-            let soccer = logic
-                .as_any()
-                .downcast_ref::<SoccerGame>()
-                .ok_or_else(|| S::Error::custom("Failed to downcast to SoccerGame"))?;
-            bincode::serialize(soccer)
-                .map_err(S::Error::custom)?
-                .serialize(serializer)
-        }
-        _ => Err(S::Error::custom("Unknown game type")),
-    }
-}
-
-fn deserialize_logic<'de, D>(deserializer: D) -> Result<Box<dyn GameLogic>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let bytes = Vec::<u8>::deserialize(deserializer)?;
-    let game_type = bytes
-        .first()
-        .copied()
-        .ok_or_else(|| serde::de::Error::custom("Empty data"))?;
-
-    match game_type {
-        1 => {
-            let soccer: SoccerGame =
-                bincode::deserialize(&bytes).map_err(serde::de::Error::custom)?;
-            Ok(Box::new(soccer))
-        }
-        _ => Err(serde::de::Error::custom("Unknown game type")),
-    }
-}
-#[derive(Serialize, Deserialize)]
 pub struct SoccerGame {
-    pub pucks: [Moveable2d; 2],
-    pub ball: Moveable2d,
+    pub pipeline: PhysicsPipeline,
+    pub integration_parameters: IntegrationParameters,
+    pub island_manager: IslandManager,
+    pub broad_phase: DefaultBroadPhase,
+    pub colliders: ColliderSet,
+    pub narrow_phase: NarrowPhase,
+    pub bodies: RigidBodySet,
+    pub pucks: [RigidBodyHandle; 10],
+    pub ball: RigidBodyHandle,
+    pub impulse_joints: ImpulseJointSet,
+    pub multibody_joints: MultibodyJointSet,
+    pub ccd_solver: CCDSolver,
 }
 
+const RADIUS: f32 = 20.0;
 impl SoccerGame {
     pub fn new() -> Self {
+        let integration_parameters = IntegrationParameters::default();
+        let mut physics_pipeline = PhysicsPipeline::new();
+        let mut broad_phase = DefaultBroadPhase::new();
+        let mut island_manager = IslandManager::new();
+        let mut narrow_phase = NarrowPhase::new();
+        let mut bodies = RigidBodySet::new();
+        let mut colliders = ColliderSet::new();
+        let mut impulse_joints = ImpulseJointSet::new();
+        let mut multibody_joints = MultibodyJointSet::new();
+        let mut ccd_solver = CCDSolver::new();
+        // Function to create a moving ball
+        let mut create_circle = |x: f32, y: f32| -> RigidBodyHandle {
+            let body = bodies.insert(
+                RigidBodyBuilder::dynamic()
+                    .translation(vector![x, y]) // Start position
+                    .linvel(vector![0.0, 0.0]) // Initial velocity
+                    .linear_damping(0.1) // friction
+                    .build(),
+            );
+            let collider = colliders.insert_with_parent(
+                ColliderBuilder::ball(RADIUS) // Circle with radius 1.0
+                    .restitution(1.0) // Perfectly elastic bounce
+                    .build(),
+                body,
+                &mut bodies,
+            );
+            return body;
+        };
+        let game_width: f32 = 600.0; // X-axis boundaries
+        let game_height: f32 = 600.0;
+        let mut start: f32 = -200.0;
+        let mut pucks = vec![];
+        for i in 0..3 {
+            let puck = create_circle(-200.0, start);
+            pucks.push(puck);
+            start += 200.0;
+        }
+        let puck11 = create_circle(-50.0, -150.0);
+        let puck12 = create_circle(-50.0, 150.0);
+        pucks.push(puck11);
+        pucks.push(puck12);
+        start = -200.0;
+        for i in 0..3 {
+            let puck2 = create_circle(200.0, start);
+            pucks.push(puck2);
+            start += 200.0;
+        }
+        let puck21 = create_circle(50.0, 150.0);
+        let puck22 = create_circle(50.0, -150.0);
+        pucks.push(puck21);
+        pucks.push(puck22);
+
+        let ball = create_circle(0.0, 0.0);
+        let wall_thickness = 1.0; //
+
+        // Create walls
+        let mut create_wall = |position: Vector<f32>, size: Vector<f32>| {
+            let body = bodies.insert(RigidBodyBuilder::fixed().translation(position).build());
+            colliders.insert_with_parent(
+                ColliderBuilder::cuboid(size.x, size.y)
+                    .restitution(0.7) // Optional: Bounciness
+                    .friction(0.4) // Optional: Surface friction
+                    .build(),
+                body,
+                &mut bodies,
+            );
+        };
+
+        create_wall(
+            vector![-game_width / 2.0 - wall_thickness, 0.0],
+            vector![wall_thickness, game_height / 2.0],
+        );
+
+        create_wall(
+            vector![game_width / 2.0 + wall_thickness, 0.0],
+            vector![wall_thickness, game_height / 2.0],
+        );
+
+        create_wall(
+            vector![0.0, game_height / 2.0 + wall_thickness],
+            vector![game_width / 2.0, wall_thickness],
+        );
+
+        create_wall(
+            vector![0.0, -game_height / 2.0 - wall_thickness],
+            vector![game_width / 2.0, wall_thickness],
+        );
+
         SoccerGame {
-            pucks: [Moveable2d::new(), Moveable2d::new()],
-            ball: Moveable2d::new(),
+            pipeline: physics_pipeline,
+            colliders,
+            bodies,
+            pucks: pucks.try_into().unwrap(),
+            ball,
+            narrow_phase,
+            integration_parameters,
+            broad_phase,
+            island_manager,
+            impulse_joints,
+            multibody_joints,
+            ccd_solver,
         }
     }
-    pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("Serialization failed")
-    }
 }
-const SOCCER_FRICTION: f64 = 0.999;
+
 impl GameLogic for SoccerGame {
     fn game_type(&self) -> u8 {
         return 1;
@@ -161,17 +213,39 @@ impl GameLogic for SoccerGame {
         return self;
     }
     fn update(&mut self, elapsed: f64) {
-        for puck in &mut self.pucks {
-            puck.update(SOCCER_FRICTION, elapsed);
-        }
-        self.ball.update(SOCCER_FRICTION, elapsed);
-        for i in 0..self.pucks.len() {
-            for j in (i + 1)..self.pucks.len() {
-                let (left, right) = self.pucks.split_at_mut(j);
-                if check_radial_collision(&left[i], &right[0], PUCK_RADIUS) {
-                    left[i].collide(&mut right[0]);
-                }
+        let physics_hooks = ();
+        let event_handler = ();
+        self.pipeline.step(
+            &vector![0.0, 0.0],
+            &self.integration_parameters,
+            &mut self.island_manager,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.bodies,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            &mut self.ccd_solver,
+            None,
+            &physics_hooks,
+            &event_handler,
+        );
+    }
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::<u8>::with_capacity(24);
+        let mut encode_f32 = |value: f32| data.extend_from_slice(&value.to_le_bytes());
+        for puck in &self.pucks {
+            if let Some(body) = self.bodies.get(*puck) {
+                let pos = body.translation();
+                encode_f32(pos.x);
+                encode_f32(pos.y);
             }
         }
+        if let Some(body) = self.bodies.get(self.ball) {
+            let pos = body.translation();
+            encode_f32(pos.x);
+            encode_f32(pos.y);
+        }
+        return data;
     }
 }

@@ -2,10 +2,13 @@ const WebSocket = require("ws");
 
 
 const SERVER_URL = "ws://localhost:8080";
-const CLIENTS_COUNT = 100;
-const TEST_DURATION_SEC = 30;
+const CLIENTS_COUNT = 1000;
+const TEST_DURATION_SEC = 60;
 const MESSAGES_PER_SEC = 10;
-
+const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+function generateRandomName() {
+    return Array.from({ length: 20 }).map((_) => letters[Math.floor(Math.random() * letters.length)]).join("");
+}
 class StressTester {
     constructor() {
         this.stats = {
@@ -45,7 +48,7 @@ class StressTester {
     }
 
     createClient(clientId) {
-        const ws = new WebSocket(SERVER_URL);
+        const ws = new WebSocket(`${SERVER_URL}?name=${generateRandomName()}`);
         let interval;
 
         ws.on('open', () => {
@@ -80,8 +83,8 @@ class StressTester {
         });
         ws.on('message', (data) => {
             let type = 0;
-            if (data.data) {
-                type = this.getMessageType(data.data);
+            if (data) {
+                type = this.getMessageType(data.buffer, data.byteOffset);
             }
             if (type === 2) {
                 this.stats.messagesReceivedState++;
@@ -89,6 +92,7 @@ class StressTester {
                     this.stats.latencySumState += performance.now() - ws.lastSentState
                 }
             } else {
+                // does not respond back on move message so this is useless;
                 this.stats.messagesReceivedMove++;
                 if (ws.lastSentMove) {
                     this.stats.latencySumMove += performance.now() - ws.lastSentMove;
@@ -109,22 +113,20 @@ class StressTester {
 
         return ws;
     }
-    getMessageType(buffer) {
+    getMessageType(buffer, offset) {
         if (buffer.byteLength === 0) {
             throw new Error("Buffer length 0");
         }
-        const view = new DataView(buffer);
-        let offset = 0;
-        const gameType = view.getUint8(offset);
-        return gameType;
+        return new DataView(buffer).getUint8(offset);
     }
     createMoveMessage() {
         // Create binary message matching your protocol
-        const buffer = new ArrayBuffer(17); // 1 byte type + 16 bytes for two f64
+        const buffer = new ArrayBuffer(10); // 1 byte type + 16 bytes for two f64
         const view = new DataView(buffer);
         view.setUint8(0, 3); // MessageType::SoccerMove
-        view.setFloat64(1, Math.random() * 2 - 1, true); // vx (-1 to 1)
-        view.setFloat64(9, Math.random() * 2 - 1, true); // vy (-1 to 1)
+        view.setFloat32(1, Math.random() * 2 - 1, true); // vx (-1 to 1)
+        view.setFloat32(5, Math.random() * 2 - 1, true); // vy (-1 to 1)
+        view.setUint8(9, Math.floor(Math.random() * 5));
         return buffer;
     }
     createStateMessage() {

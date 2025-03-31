@@ -60,6 +60,7 @@ impl From<MessageType> for u8 {
 
 #[derive(Serialize, Deserialize)]
 pub struct SoccerMoveMessage {
-    pub vx: f64,
-    pub vy: f64,
+    pub vx: f32,
+    pub vy: f32,
+    pub target: u8,
 }
