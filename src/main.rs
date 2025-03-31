@@ -38,7 +38,9 @@ async fn main() {
 
     println!("Listening on {}", addr);
     // 60hz
+    #[allow(unused_must_use)] // suppress warning
     start_periodic_task(games.clone(), Duration::from_millis(1000 / 60));
+
     while let Ok((stream, _)) = listener.accept().await {
         let games = games.clone();
 

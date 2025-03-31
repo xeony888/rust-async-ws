@@ -1,11 +1,11 @@
 use bincode;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
-use crate::physics::Moveable2d;
+use crate::physics::{check_radial_collision, Moveable2d, PUCK_RADIUS};
 
 pub struct Client {
     pub id: usize,
@@ -34,12 +34,13 @@ pub trait GameLogic: Send + Sync {
     fn game_type(&self) -> u8;
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-    fn update(&mut self);
+    fn update(&mut self, elapsed: f64);
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Game {
     pub game_type: u8,
+    pub last_update_ms: u128,
     #[serde(
         serialize_with = "serialize_logic",
         deserialize_with = "deserialize_logic"
@@ -51,8 +52,13 @@ pub struct Game {
 impl Game {
     pub fn new<G: GameLogic + 'static>(logic: G, players: Vec<usize>) -> Self {
         let game_type = logic.game_type();
+
         Self {
             game_type,
+            last_update_ms: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
             logic: Box::new(logic),
             players,
         }
@@ -72,7 +78,19 @@ impl Game {
     pub fn from_bytes(bytes: &[u8]) -> Self {
         bincode::deserialize(bytes).expect("Deserialization failed")
     }
-    pub fn update(&mut self) {}
+    pub fn update(&mut self) {
+        let elapsed = self.get_and_update_duration() as f64;
+        self.logic.update(elapsed);
+    }
+    pub fn get_and_update_duration(&mut self) -> u128 {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let duration = now - self.last_update_ms;
+        self.last_update_ms = now;
+        return duration;
+    }
 }
 
 fn serialize_logic<S>(logic: &Box<dyn GameLogic>, serializer: S) -> Result<S::Ok, S::Error>
@@ -142,10 +160,18 @@ impl GameLogic for SoccerGame {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         return self;
     }
-    fn update(&mut self) {
+    fn update(&mut self, elapsed: f64) {
         for puck in &mut self.pucks {
-            puck.update(SOCCER_FRICTION);
+            puck.update(SOCCER_FRICTION, elapsed);
         }
-        self.ball.update(SOCCER_FRICTION);
+        self.ball.update(SOCCER_FRICTION, elapsed);
+        for i in 0..self.pucks.len() {
+            for j in (i + 1)..self.pucks.len() {
+                let (left, right) = self.pucks.split_at_mut(j);
+                if check_radial_collision(&left[i], &right[0], PUCK_RADIUS) {
+                    left[i].collide(&mut right[0]);
+                }
+            }
+        }
     }
 }
